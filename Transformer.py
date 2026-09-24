@@ -7,27 +7,6 @@ from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
-# Loads the Sudoku dataset
-df = pd.read_csv("SUDOKU.csv")
-
-# Remove puzzles that are too hard (puzzles with very high solver attempts)
-df = df[df["attempts"] <= 100000].copy()
-
-# Apply log transform to reduce skew of the attempts
-df["log_attempts"] = np.log1p(df["attempts"])
-
-# Assign difficulty based on log attempts
-df["difficulty"] = pd.cut(
-    df["log_attempts"],
-    bins=[df["log_attempts"].min(), 6.04, 6.98, df["log_attempts"].max()],
-    labels=[0, 1, 2],  # 0 = Easy, 1 = Medium, 2 = Hard
-    include_lowest=True
-)
-df["difficulty"] = df["difficulty"].astype(int) #declaring the difficulties as an integer
-
-# Split into training and validation sets
-train_df, val_df = train_test_split(df, test_size=0.2, stratify=df["difficulty"], random_state=42)
-
 # Preprocessing the dataset
 class SudokuDataset(Dataset):
     def __init__(self, dataframe):
@@ -42,10 +21,6 @@ class SudokuDataset(Dataset):
         grid = np.array([int(c) for c in row["puzzle"]], dtype=np.int64)
         label = torch.tensor(row["difficulty"], dtype=torch.long)
         return torch.tensor(grid), label
-
-# Loaders for batching and shuffling data
-train_loader = DataLoader(SudokuDataset(train_df), batch_size=128, shuffle=True)
-val_loader = DataLoader(SudokuDataset(val_df), batch_size=128)
 
 # Transformer model 
 class SudokuTransformerClassifier(nn.Module):
@@ -81,6 +56,36 @@ class SudokuTransformerClassifier(nn.Module):
         x = self.transformer(x)     # Run through transformer
         cls_output = x[:, 0, :]      # Use the CLS token output
         return self.fc(cls_output)
+
+# Loading the labelled dataset and assigning a difficulty class to every puzzle
+def load_dataframe(csv_path="SUDOKU.csv"):
+    # Force the puzzle column to stay a string. Read without this, pandas turns an
+    # 81-digit puzzle into an int and drops any leading zero
+    df = pd.read_csv(csv_path, dtype={"puzzle": str})
+
+    # Remove puzzles that are too hard (puzzles with very high solver attempts)
+    df = df[df["attempts"] <= 100000].copy()
+
+    # Apply log transform to reduce skew of the attempts
+    df["log_attempts"] = np.log1p(df["attempts"])
+
+    # Assign difficulty based on log attempts
+    df["difficulty"] = pd.cut(
+        df["log_attempts"],
+        bins=[df["log_attempts"].min(), 6.04, 6.98, df["log_attempts"].max()],
+        labels=[0, 1, 2],  # 0 = Easy, 1 = Medium, 2 = Hard
+        include_lowest=True
+    )
+    df["difficulty"] = df["difficulty"].astype(int) #declaring the difficulties as an integer
+    return df
+
+# Building the loaders that batch and shuffle the data
+def build_loaders(df, batch_size=128):
+    # Split into training and validation sets
+    train_df, val_df = train_test_split(df, test_size=0.2, stratify=df["difficulty"], random_state=42)
+    train_loader = DataLoader(SudokuDataset(train_df), batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(SudokuDataset(val_df), batch_size=batch_size)
+    return train_loader, val_loader
 
 # Training the Model
 def train_model(model, train_loader, val_loader, epochs=20, device="cuda"):
@@ -143,10 +148,13 @@ def train_model(model, train_loader, val_loader, epochs=20, device="cuda"):
     plt.show()
 
 
-
-
 # Run training and saving model
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = SudokuTransformerClassifier()
-torch.save(model.state_dict(), "Transformer.pth")
-train_model(model, train_loader, val_loader, epochs=20, device=device)
+# Guarded so that importing this file from Game.py only pulls in the model class
+# instead of loading the dataset and kicking off a full training run
+if __name__ == "__main__":
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    df = load_dataframe("SUDOKU.csv")
+    train_loader, val_loader = build_loaders(df)
+    model = SudokuTransformerClassifier()
+    train_model(model, train_loader, val_loader, epochs=20, device=device)
+    torch.save(model.state_dict(), "Transformer.pth")  # Save the trained weights, not the initial random ones

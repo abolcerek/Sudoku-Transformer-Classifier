@@ -68,38 +68,80 @@ def convert_to_array(puzzle_str):
 # Estimate difficulty using the model 
 def classify_difficulty(model, puzzle_str):
     array = convert_to_array(puzzle_str)
-    array = torch.tensor(array, dtype=torch.long).view(1, 9, 9)
+    # The model expects a flat sequence of 81 tokens, not a 9x9 grid
+    array = torch.tensor(array, dtype=torch.long).view(1, 81)
     with torch.no_grad():
         output = model(array)
         return torch.argmax(output, dim=1).item()
 
-# Random puzzle generator
-def generate_random_puzzle_with_difficulty(model, target_bin=None):
-    attempts = 0
-    while True:
-        board = [[0 for _ in range(9)] for _ in range(9)]
-        filled = 0
-        while filled < random.randint(20, 40):
-            r = random.randint(0, 8)
-            c = random.randint(0, 8)
-            if board[r][c] == 0:
+# Number of clues left in a generated puzzle. Scattering only 20-40 random digits
+# produces boards far sparser than the training data, so the classifier would be
+# extrapolating. Keep this in the range of the puzzles the model was trained on.
+MIN_GIVENS = 30
+
+# Count solutions, stopping early once the limit is reached
+def count_solutions(board, limit=2):
+    for row in range(9):
+        for col in range(9):
+            if board[row][col] == 0:
+                total = 0
+                for num in range(1, 10):
+                    if is_valid(board, row, col, num):
+                        board[row][col] = num
+                        total += count_solutions(board, limit - total)
+                        board[row][col] = 0
+                        if total >= limit:
+                            return total
+                return total  # Every digit was exhausted for this empty cell
+    return 1  # Board is full, so this is one complete solution
+
+# Fill an empty board with a random complete solution
+def fill_board(board):
+    for row in range(9):
+        for col in range(9):
+            if board[row][col] == 0:
                 candidates = list(range(1, 10))
                 random.shuffle(candidates)
                 for num in candidates:
-                    if is_valid(board, r, c, num):
-                        board[r][c] = num
-                        filled += 1
-                        break
-        puzzle_str = board_to_string(board)
-        grid_copy = convert_to_array(puzzle_str)
-        if not solve_sudoku(grid_copy.copy()):
-            continue
+                    if is_valid(board, row, col, num):
+                        board[row][col] = num
+                        if fill_board(board):
+                            return True
+                        board[row][col] = 0
+                return False
+    return True
+
+# Build a puzzle by removing clues from a full solution, keeping the solution unique
+def carve_puzzle(min_givens=MIN_GIVENS):
+    board = [[0 for _ in range(9)] for _ in range(9)]
+    fill_board(board)
+
+    cells = [(r, c) for r in range(9) for c in range(9)]
+    random.shuffle(cells)
+    givens = 81
+    for r, c in cells:
+        if givens <= min_givens:
+            break
+        removed = board[r][c]
+        board[r][c] = 0
+        # Put the clue back if taking it out allows more than one solution
+        if count_solutions([row[:] for row in board]) != 1:
+            board[r][c] = removed
+        else:
+            givens -= 1
+    return board
+
+# Generate a puzzle, preferring one the model puts in the target difficulty bin
+def generate_random_puzzle_with_difficulty(model, target_bin=None, max_attempts=20):
+    fallback = None
+    for _ in range(max_attempts):
+        puzzle_str = board_to_string(carve_puzzle())
         difficulty_bin = classify_difficulty(model, puzzle_str)
         if target_bin is None or difficulty_bin == target_bin:
             return puzzle_str, difficulty_bin
-        attempts += 1
-        if attempts > 100:
-            return puzzle_str, difficulty_bin
+        if fallback is None:
+            fallback = (puzzle_str, difficulty_bin)  # Keep the first one in case we never hit the target
+    return fallback
 
 # GUI app class
 def build_gui():

@@ -2,10 +2,10 @@ import pandas as pd
 import numpy as np
 
 # Load the original Sudoku dataset, dataset is located at https://www.kaggle.com/datasets/rohanrao/sudoku
-df = pd.read_csv("sudoku.csv")
+df = pd.read_csv("sudoku.csv", dtype=str)  # Keep puzzles as strings so leading zeros survive
 
 # Convert '.' which are represented as empty cells to '0'
-df["puzzle"] = df["puzzle"].str.replace(".", "0")
+df["puzzle"] = df["puzzle"].str.replace(".", "0", regex=False)  # Literal dot, not a regex wildcard
 
 # Check if a number is valid at the given cell in the board
 def is_valid(board, row, col, num):
